@@ -16,7 +16,7 @@ const GAP_COEFFICIENTS = {
  * @param {number} gradient - Gradient percentage (-35 to 35)
  * @returns {number} - Adjustment factor (pace multiplier)
  */
-export function calculateGradeAdjustment(gradientPercent) {
+function calculateGradeAdjustment(gradientPercent) {
   // Keep reasonable gradient bounds but don't cap the output
   const clampedGradient = Math.max(-35, Math.min(35, gradientPercent));
   

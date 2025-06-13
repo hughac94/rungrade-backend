@@ -18,7 +18,7 @@
  * FLOW: GPS Points → Distance Calculation → Bin Creation → Performance Metrics
  */ 
 
-const { calculateGradeAdjustment } = require('./Coefficients');
+const { GAP_COEFFICIENTS, calculateGradeAdjustment } = require('./Coefficients');
 
 function formatTime(seconds) {
   if (seconds == null) return '';

@@ -26,6 +26,7 @@ const GPXParser = require('gpxparser');
 // Correct import based on documentation
 const FitParser = require('fit-file-parser').default;
 const gpxBinning = require('./gpxBinning');
+const { processBatch, BATCH_SIZE } = require('./batchProcessing');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
@@ -550,6 +551,74 @@ app.post('/api/advanced-analysis', (req, res) => {
       success: false, 
       error: error.message 
     });
+  }
+});
+
+// New batch analysis endpoint
+app.post('/api/analyze-batch', upload.array('files', 100), async (req, res) => {
+  try {
+    const binLength = parseInt(req.body.binLength) || 50;
+    const files = req.files;
+
+    if (!files || files.length === 0) {
+      return res.status(400).json({ success: false, error: 'No files provided' });
+    }
+
+    // Set up Server-Sent Events for real-time progress
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': '*'
+    });
+
+    const totalBatches = Math.ceil(files.length / BATCH_SIZE);
+    const allResults = [];
+    const allErrors = [];
+
+
+    for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
+      const start = batchIndex * BATCH_SIZE;
+      const end = start + BATCH_SIZE;
+      const batchFiles = files.slice(start, end);
+
+      const batchResult = await processBatch(batchFiles, batchIndex, binLength, processFile, getRoutePoints);
+
+      allResults.push(...batchResult.results);
+      allErrors.push(...batchResult.errors);
+
+      // Send progress update
+      const progress = {
+        type: 'progress',
+        batchIndex: batchIndex + 1,
+        totalBatches,
+        progressPercent: Math.round(((batchIndex + 1) / totalBatches) * 100),
+        filesProcessed: allResults.length + allErrors.length,
+        totalFiles: files.length,
+        batchResults: batchResult.results,
+        batchErrors: batchResult.errors,
+        isComplete: batchIndex === totalBatches - 1
+      };
+
+      res.write(`data: ${JSON.stringify(progress)}\n\n`);
+    }
+
+    // Send final summary
+    const summary = {
+      type: 'complete',
+      totalFiles: files.length,
+      successfulFiles: allResults.length,
+      failedFiles: allErrors.length,
+      results: allResults,
+      errors: allErrors
+    };
+
+    res.write(`data: ${JSON.stringify(summary)}\n\n`);
+    res.end();
+
+  } catch (error) {
+    res.write(`data: ${JSON.stringify({ type: 'error', error: error.message })}\n\n`);
+    res.end();
   }
 });
 
