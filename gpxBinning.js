@@ -18,7 +18,7 @@
  * FLOW: GPS Points → Distance Calculation → Bin Creation → Performance Metrics
  */ 
 
-
+const { calculateGradeAdjustment } = require('./Coefficients');
 
 function formatTime(seconds) {
   if (seconds == null) return '';
@@ -89,12 +89,7 @@ function getAnalysisBins(points, binLength = 50, polyCoeffs = null, newAdjustedV
       if (polyCoeffs && Array.isArray(polyCoeffs) && polyCoeffs.length === 5 && typeof gradient === 'number') {
         const clampedGradient = Math.max(-35, Math.min(35, gradient));
         const [a, b, c, d, e] = polyCoeffs;
-        adjFactor =
-          a * Math.pow(clampedGradient, 4) +
-          b * Math.pow(clampedGradient, 3) +
-          c * Math.pow(clampedGradient, 2) +
-          d * clampedGradient +
-          e;
+        adjFactor =calculateGradeAdjustment(clampedGradient);
       }
 
       let adjustedTime = null;
@@ -284,8 +279,33 @@ function getBinSummary(bins) {
  * Groups bins by gradient ranges and calculates average pace for each range
  */
 function getGradientPaceAnalysis(allResults) {
-  // Define gradient buckets (in %)
-  const gradientBuckets = [
+  console.log('🔍 getGradientPaceAnalysis called - UPDATED VERSION WITH MEDIAN');
+  if (!allResults || allResults.length === 0) {
+    return {
+      buckets: [],
+      totalBinsAnalyzed: 0,
+      summary: 'No results to analyze'
+    };
+  }
+
+  // Collect all bins from all results
+  const allBins = [];
+  allResults.forEach(result => {
+    if (result.bins && Array.isArray(result.bins)) {
+      allBins.push(...result.bins);
+    }
+  });
+
+  if (allBins.length === 0) {
+    return {
+      buckets: [],
+      totalBinsAnalyzed: 0,
+      summary: 'No bins found in results'
+    };
+  }
+
+  // Define gradient ranges
+  const gradientRanges = [
     { min: -Infinity, max: -25, label: '≤-25%' },
     { min: -25, max: -20, label: '-25 to -20%' },
     { min: -20, max: -15, label: '-20 to -15%' },
@@ -300,69 +320,83 @@ function getGradientPaceAnalysis(allResults) {
     { min: 25, max: Infinity, label: '≥25%' }
   ];
 
-  // Initialize buckets
-  const bucketData = gradientBuckets.map(bucket => ({
-    ...bucket,
-    totalDistance: 0,
-    totalTime: 0,
-    binCount: 0,
-    avgPace: null,
-    paceMinPerKm: null
-  }));
+  // Group bins by gradient ranges
+  const buckets = gradientRanges.map(range => {
+    const binsInRange = allBins.filter(bin => {
+      const gradient = bin.gradient;
+      if (range.min === -Infinity) return gradient <= range.max;
+      if (range.max === Infinity) return gradient >= range.min;
+      return gradient > range.min && gradient <= range.max;
+    });
 
-  // Collect all bins from all files
-  const allBins = [];
-  allResults.forEach(result => {
-    if (result.bins && Array.isArray(result.bins)) {
-      allBins.push(...result.bins);
+    if (binsInRange.length === 0) return null;
+
+    // FIX: Use pace_min_per_km instead of pace
+    const paceValues = binsInRange
+      .map(bin => bin.pace_min_per_km)  // Changed from bin.pace
+      .filter(pace => pace != null && !isNaN(pace) && pace > 0);
+    
+    const heartRateValues = binsInRange
+      .map(bin => bin.avgHeartRate)
+      .filter(hr => hr != null && !isNaN(hr) && hr > 0);
+    
+    if (paceValues.length === 0) return null;
+    
+    // Calculate mean (existing - add validation)
+    const avgPace = paceValues.reduce((sum, pace) => sum + pace, 0) / paceValues.length;
+    const avgHeartRate = heartRateValues.length > 0 ? 
+      heartRateValues.reduce((sum, hr) => sum + hr, 0) / heartRateValues.length : null;
+    
+    // Calculate median (fixed)
+    const sortedPaces = [...paceValues].sort((a, b) => a - b);
+    let medianPace;
+    if (sortedPaces.length === 1) {
+      medianPace = sortedPaces[0];
+    } else if (sortedPaces.length % 2 === 0) {
+      const mid1 = sortedPaces[sortedPaces.length / 2 - 1];
+      const mid2 = sortedPaces[sortedPaces.length / 2];
+      medianPace = (mid1 + mid2) / 2;
+    } else {
+      medianPace = sortedPaces[Math.floor(sortedPaces.length / 2)];
     }
-  });
-
-  console.log(`Analyzing ${allBins.length} total bins for gradient vs pace`);
-
-  // Group bins into gradient buckets
-  allBins.forEach(bin => {
-    if (typeof bin.gradient === 'number' && 
-        typeof bin.distance === 'number' && 
-        typeof bin.timeInSeconds === 'number' &&
-        bin.distance > 0 && bin.timeInSeconds > 0) {
-      
-      // Find the appropriate bucket
-      const bucketIndex = bucketData.findIndex(bucket => 
-        bin.gradient > bucket.min && bin.gradient <= bucket.max
-      );
-      
-      if (bucketIndex >= 0) {
-        bucketData[bucketIndex].totalDistance += bin.distance;
-        bucketData[bucketIndex].totalTime += bin.timeInSeconds;
-        bucketData[bucketIndex].binCount++;
+    
+    let medianHeartRate = null;
+    if (heartRateValues.length > 0) {
+      const sortedHeartRates = [...heartRateValues].sort((a, b) => a - b);
+      if (sortedHeartRates.length === 1) {
+        medianHeartRate = sortedHeartRates[0];
+      } else if (sortedHeartRates.length % 2 === 0) {
+        const mid1 = sortedHeartRates[sortedHeartRates.length / 2 - 1];
+        const mid2 = sortedHeartRates[sortedHeartRates.length / 2];
+        medianHeartRate = (mid1 + mid2) / 2;
+      } else {
+        medianHeartRate = sortedHeartRates[Math.floor(sortedHeartRates.length / 2)];
       }
     }
-  });
 
-  // Calculate average pace for each bucket
-  bucketData.forEach(bucket => {
-    if (bucket.totalDistance > 0 && bucket.totalTime > 0) {
-      // Calculate pace in minutes per km
-      const paceMinPerKm = (bucket.totalTime / 60) / (bucket.totalDistance / 1000);
-      bucket.avgPace = paceMinPerKm;
-      
-      // Format as mm:ss
-      const minutes = Math.floor(paceMinPerKm);
-      const seconds = Math.round((paceMinPerKm - minutes) * 60);
-      bucket.paceMinPerKm = `${minutes}:${seconds.toString().padStart(2, '0')}`;
-    }
-  });
+    // Debug logging
+    console.log(`Bucket ${range.label}: ${paceValues.length} pace values, mean: ${avgPace.toFixed(2)}, median: ${medianPace.toFixed(2)}`);
 
-  // Filter out empty buckets
-  const nonEmptyBuckets = bucketData.filter(bucket => bucket.binCount > 0);
-  
-  console.log(`Gradient analysis complete: ${nonEmptyBuckets.length} gradient ranges have data`);
-  
+    return {
+      ...range,
+      binCount: binsInRange.length,
+      // Existing mean fields (unchanged)
+      avgPace: isNaN(avgPace) ? null : avgPace,
+      avgHeartRate: isNaN(avgHeartRate) ? null : avgHeartRate,
+      paceMinPerKm: isNaN(avgPace) ? 'N/A' : `${Math.floor(avgPace)}:${Math.round((avgPace % 1) * 60).toString().padStart(2, '0')}`,
+      // New median fields
+      medianPace: isNaN(medianPace) ? null : medianPace,
+      medianHeartRate: isNaN(medianHeartRate) ? null : medianHeartRate,
+      medianPaceMinPerKm: isNaN(medianPace) ? 'N/A' : `${Math.floor(medianPace)}:${Math.round((medianPace % 1) * 60).toString().padStart(2, '0')}`
+    };
+  }).filter(bucket => bucket !== null);
+
+console.log('Sample bucket with median data:', buckets[0]);
+
   return {
-    buckets: nonEmptyBuckets,
+    buckets,
     totalBinsAnalyzed: allBins.length,
-    bucketsWithData: nonEmptyBuckets.length
+    summary: `Analyzed ${buckets.length} gradient ranges with ${allBins.length} total bins`
   };
 }
 
@@ -434,70 +468,69 @@ function getGradeAdjustmentAnalysis(allResults) {
   // First, get pace by individual gradient using existing function
   const gradientData = getPaceByGradientChart(allResults);
   
-  // Find the pace at 0% gradient to use as baseline
+  // Calculate base paces (both mean and median) - SINGLE DECLARATION
   let basePace = null;
+  let basePaceMedian = null;
+  
+  // Find the pace at 0% gradient to use as baseline
   const flatGradient = gradientData.find(item => item.gradient === '0');
   if (flatGradient) {
     basePace = flatGradient.avgPace;
   } else {
     // If no exact 0% gradient data, estimate from nearby values
     const nearZero = gradientData
-      .filter(item => parseInt(item.gradient) >= -2 && parseInt(item.gradient) <= 2)
+      .filter(item => {
+        const grad = parseInt(item.gradient);
+        return !isNaN(grad) && grad >= -2 && grad <= 2;
+      })
       .sort((a, b) => Math.abs(parseInt(a.gradient)) - Math.abs(parseInt(b.gradient)));
     
     if (nearZero.length > 0) {
-      basePace = nearZero[0].avgPace; // Use the closest to 0
+      basePace = nearZero[0].avgPace;
     } else {
       // If still no data, use average of all paces
       const validPaces = gradientData.filter(item => item.avgPace).map(item => item.avgPace);
-      basePace = validPaces.reduce((sum, pace) => sum + pace, 0) / validPaces.length;
+      if (validPaces.length > 0) {
+        basePace = validPaces.reduce((sum, pace) => sum + pace, 0) / validPaces.length;
+      }
     }
   }
   
-  // Calculate personal adjustment factors
+  // For now, use the same basePace for median calculations
+  // TODO: Calculate proper median base pace when individual bin data is available
+  basePaceMedian = basePace;
+
   const adjustmentData = gradientData.map(item => {
-    // For special gradient strings like "<=-35" or ">=35", extract the numeric part
-    let gradientValue;
-    if (item.gradient === '<=-35') gradientValue = -35;
-    else if (item.gradient === '>=35') gradientValue = 35;
-    else gradientValue = parseInt(item.gradient);
+    const gradientValue = parseFloat(item.gradient.replace('%', ''));
+    const literatureAdjustment = calculateGradeAdjustment(gradientValue);
     
-    // Calculate personal adjustment factor
-    const adjustmentFactor = basePace > 0 ? item.avgPace / basePace : 1;
-    
-    // Calculate literature adjustment factor using the provided formula
-    const x = gradientValue;
-    const literatureAdjustment = 
-      -5.294439830640173e-7 * Math.pow(x, 4) +
-      -0.000003989571857841264 * Math.pow(x, 3) +
-      0.0020535661142752205 * Math.pow(x, 2) +
-      0.03265674125152065 * x +
-      1;
+    // Calculate adjustment factors
+    const meanAdjustmentFactor = basePace > 0 ? item.avgPace / basePace : 1;
+    const medianAdjustmentFactor = basePaceMedian > 0 ? item.avgPace / basePaceMedian : 1;
     
     return {
       gradient: item.gradient,
       gradientValue,
-      personalAdjustment: parseFloat(adjustmentFactor.toFixed(4)),
-      literatureAdjustment: parseFloat(literatureAdjustment.toFixed(4)),
-      binCount: item.binCount,
+      // Mean data (existing)
+      personalAdjustment: parseFloat(meanAdjustmentFactor.toFixed(4)),
       avgPace: item.avgPace,
-      paceLabel: item.paceLabel
+      paceLabel: item.paceLabel,
+      // Median data (new) - for now using same values, will be different when proper median calculation is implemented
+      personalAdjustmentMedian: parseFloat(medianAdjustmentFactor.toFixed(4)),
+      medianPace: item.avgPace, // TODO: Calculate actual median pace per gradient
+      medianPaceLabel: item.paceLabel, // TODO: Format median pace label
+      // Common data
+      literatureAdjustment: parseFloat(literatureAdjustment.toFixed(4)),
+      binCount: item.binCount
     };
   });
-  
-  // Sort by gradient value
-  adjustmentData.sort((a, b) => {
-    if (a.gradient === '<=-35') return -1;
-    if (b.gradient === '<=-35') return 1;
-    if (a.gradient === '>=35') return 1;
-    if (b.gradient === '>=35') return -1;
-    return a.gradientValue - b.gradientValue;
-  });
-  
+
   return {
     adjustmentData,
     basePace,
-    basePaceLabel: basePace ? `${Math.floor(basePace)}:${Math.round((basePace % 1) * 60).toString().padStart(2, '0')}` : 'N/A'
+    basePaceMedian,
+    basePaceLabel: basePace ? `${Math.floor(basePace)}:${Math.round((basePace % 1) * 60).toString().padStart(2, '0')}` : 'N/A',
+    basePaceMedianLabel: basePaceMedian ? `${Math.floor(basePaceMedian)}:${Math.round((basePaceMedian % 1) * 60).toString().padStart(2, '0')}` : 'N/A'
   };
 }
 
@@ -511,3 +544,5 @@ module.exports = {
   haversine,
   formatTime
 };
+
+

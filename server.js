@@ -533,6 +533,9 @@ app.post('/api/advanced-analysis', (req, res) => {
     const paceByGradientChart = gpxBinning.getPaceByGradientChart(results);
     const gradeAdjustment = gpxBinning.getGradeAdjustmentAnalysis(results);
     
+    console.log('✅ Advanced analysis complete');
+    console.log('Sample gradient bucket with median:', gradientPace.buckets[0]);
+
     res.json({
       success: true,
       analyses: {
@@ -542,7 +545,7 @@ app.post('/api/advanced-analysis', (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Advanced analysis error:', error);
+    console.error('❌ Advanced analysis error:', error);
     res.status(500).json({ 
       success: false, 
       error: error.message 
