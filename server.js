@@ -431,7 +431,7 @@ app.get('/', (req, res) => {
   });
 });
 
-// Replace the analyze-with-bins endpoint:
+
 
 app.post('/api/analyze-with-bins', upload.array('files', 200), async (req, res) => {
   console.log(`🏃‍♂️ Processing ${req.files.length} files with binning...`);
@@ -523,8 +523,7 @@ app.post('/api/analyze-with-bins', upload.array('files', 200), async (req, res) 
   }
 });
 
-// Keep the existing endpoint as-is (just loads and bins)
-// Add a NEW endpoint for advanced analysis:
+
 
 app.post('/api/advanced-analysis', (req, res) => {
   try {
