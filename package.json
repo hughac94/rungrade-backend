@@ -1,0 +1,28 @@
+{
+  "name": "rungrade-backend",
+  "version": "1.0.0",
+  "description": "RunGrade GPX and FIT analysis backend",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "fit-file-parser": "^1.21.0",
+    "gpxparser": "^3.0.8",
+    "multer": "^1.4.5-lts.1"
+  },
+  "engines": {
+    "node": "18.x"
+  },
+  "keywords": [
+    "gpx",
+    "fit",
+    "running",
+    "analysis"
+  ],
+  "author": "Your Name",
+  "license": "MIT"
+}
