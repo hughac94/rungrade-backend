@@ -26,13 +26,14 @@ const GPXParser = require('gpxparser');
 // Correct import based on documentation
 const FitParser = require('fit-file-parser').default;
 const gpxBinning = require('./gpxBinning');
-const { processBatch, BATCH_SIZE } = require('./batchProcessing');
+const compression = require('compression');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
 // Middleware
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
+
 
 // Configure multer for file uploads
 const upload = multer({ 
@@ -406,6 +407,25 @@ function getFITRoutePoints(fileBuffer) {
   });
 }
 
+// Disable compression for SSE, enable for everything else
+app.use((req, res, next) => {
+  if (req.headers.accept && req.headers.accept.includes('text/event-stream')) {
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    return next();
+  }
+  compression()(req, res, next);
+});
+app.use((req, res, next) => {
+  if (!res.flush) {
+    res.flush = function () {
+      try { res.write(''); } catch (e) {}
+    };
+  }
+  next();
+});
+
 // Updated API endpoint
 
 
@@ -553,15 +573,13 @@ app.post('/api/advanced-analysis', (req, res) => {
   }
 });
 
-// New batch analysis endpoint
+//  batch analysis endpoint
 app.post('/api/analyze-batch', upload.array('files', 100), async (req, res) => {
+    console.log('--- /api/analyze-batch called ---');
   try {
     const binLength = parseInt(req.body.binLength) || 50;
-    const files = req.files;
+    const files = req.files
 
-    if (!files || files.length === 0) {
-      return res.status(400).json({ success: false, error: 'No files provided' });
-    }
 
     // Set up Server-Sent Events for real-time progress
     res.writeHead(200, {
@@ -570,42 +588,90 @@ app.post('/api/analyze-batch', upload.array('files', 100), async (req, res) => {
       'Connection': 'keep-alive',
       'Access-Control-Allow-Origin': '*'
     });
+    res.setHeader('X-Accel-Buffering', 'no'); // For nginx
+ 
 
-    const totalBatches = Math.ceil(files.length / BATCH_SIZE);
+    if (!files || files.length === 0) {
+  res.write(`data: ${JSON.stringify({ type: 'error', error: 'No files provided' })}\n\n`);
+  res.end();
+  return;
+  }
+
+   // Initial progress message
+    res.write(`data: ${JSON.stringify({
+      type: 'progress',
+      fileIndex: 0,
+      totalFiles: files.length,
+      progressPercent: 0,
+      filesProcessed: 0,
+      currentFile: 'Starting analysis...',
+      resultsSoFar: [],
+      errorsSoFar: []
+    })}\n\n`);
+    if (res.flush) res.flush();
+    
+    // Small delay to ensure initial message gets to browser
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    // Log the start of processing
+    console.log(`Starting to process ${files.length} files`);
+
     const allResults = [];
     const allErrors = [];
+    const totalFiles = files.length;
 
+    for (let i = 0; i < totalFiles; i++) {
+      const file = files[i];
 
-    for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
-      const start = batchIndex * BATCH_SIZE;
-      const end = start + BATCH_SIZE;
-      const batchFiles = files.slice(start, end);
+    console.log(`Processing file ${i+1}/${totalFiles}: ${file.originalname}`);
 
-      const batchResult = await processBatch(batchFiles, batchIndex, binLength, processFile, getRoutePoints);
+      try {
+        const result = await processFile(file.buffer, file.originalname);
+        if (result.error) {
+          allErrors.push({ filename: file.originalname, error: result.error });
+        } else {
+          const routePoints = await getRoutePoints(file.buffer, file.originalname);
+          const bins = routePoints ? gpxBinning.getAnalysisBins(routePoints, binLength) : [];
+          const hasHeartRateData = bins.some(bin => bin.avgHeartRate !== null);
 
-      allResults.push(...batchResult.results);
-      allErrors.push(...batchResult.errors);
+          allResults.push({
+            ...result.stats,
+            binLength,
+            bins,
+            binSummary: gpxBinning.getBinSummary(bins),
+            routePointCount: routePoints ? routePoints.length : 0,
+            hasHeartRateData,
+            fileIndex: i
+          });
+        }
+      } catch (error) {
+        allErrors.push({ filename: file.originalname, error: error.message });
+      }
 
-      // Send progress update
+      console.log(`File ${i+1}/${totalFiles} complete: ${file.originalname}`);
+
+      // Send progress update after each file
       const progress = {
         type: 'progress',
-        batchIndex: batchIndex + 1,
-        totalBatches,
-        progressPercent: Math.round(((batchIndex + 1) / totalBatches) * 100),
+        fileIndex: i + 1,
+        totalFiles,
+        progressPercent: Math.round(((i + 1) / totalFiles) * 100),
         filesProcessed: allResults.length + allErrors.length,
-        totalFiles: files.length,
-        batchResults: batchResult.results,
-        batchErrors: batchResult.errors,
-        isComplete: batchIndex === totalBatches - 1
+        currentFile: file.originalname,
+        resultsSoFar: allResults,
+        errorsSoFar: allErrors
       };
-
       res.write(`data: ${JSON.stringify(progress)}\n\n`);
+      if (res.flush) res.flush();
+      
+      await new Promise(resolve => setTimeout(resolve, 50));
+      
     }
 
     // Send final summary
     const summary = {
       type: 'complete',
-      totalFiles: files.length,
+      totalFiles,
       successfulFiles: allResults.length,
       failedFiles: allErrors.length,
       results: allResults,
@@ -616,10 +682,159 @@ app.post('/api/analyze-batch', upload.array('files', 100), async (req, res) => {
     res.end();
 
   } catch (error) {
+    console.error('Batch SSE error:', error);
     res.write(`data: ${JSON.stringify({ type: 'error', error: error.message })}\n\n`);
     res.end();
   }
 });
+
+
+// Add these two new endpoints:
+
+// First endpoint for file upload
+app.post('/api/upload-batch', upload.array('files', 100), async (req, res) => {
+  try {
+    const binLength = parseInt(req.body.binLength) || 50;
+    const files = req.files;
+
+    if (!files || files.length === 0) {
+      return res.status(400).json({ success: false, error: 'No files provided' });
+    }
+
+    // Store files in memory cache with a unique batch ID
+    const batchId = Date.now().toString();
+    
+    // Store file info in memory (you could use Redis or similar for production)
+    req.app.locals.batchFiles = req.app.locals.batchFiles || {};
+    req.app.locals.batchFiles[batchId] = {
+      files: files,
+      binLength: binLength,
+      timestamp: Date.now()
+    };
+
+    // Return just the batch ID to the client
+    res.json({ success: true, batchId: batchId, fileCount: files.length });
+  } catch (error) {
+    console.error('Batch upload error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Second endpoint for SSE processing stream
+app.get('/api/process-batch/:batchId', async (req, res) => {
+  const { batchId } = req.params;
+  const batchData = req.app.locals.batchFiles?.[batchId];
+
+  if (!batchData) {
+    return res.status(404).json({ success: false, error: 'Batch not found' });
+  }
+
+  // Now set up SSE - safely because this is a GET request with no body parsing
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');  
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('X-Accel-Buffering', 'no');
+  
+  try {
+    const files = batchData.files;
+    const binLength = batchData.binLength;
+    const totalFiles = files.length;
+    const allResults = [];
+    const allErrors = [];
+
+    // Add this initial progress message
+    res.write(`data: ${JSON.stringify({
+      type: 'progress',
+      fileIndex: 0,
+      totalFiles,
+      progressPercent: 0,
+      filesProcessed: 0,
+      currentFile: 'Starting analysis...',
+      resultsSoFar: [],
+      errorsSoFar: []
+    })}\n\n`);
+    if (res.flush) res.flush();
+    
+    // Small delay to ensure initial message gets to browser
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    console.log(`Starting to process ${totalFiles} files`);
+
+    for (let i = 0; i < totalFiles; i++) {
+      const file = files[i];
+      
+      console.log(`Processing file ${i+1}/${totalFiles}: ${file.originalname}`);
+      
+      try {
+        const result = await processFile(file.buffer, file.originalname);
+        if (result.error) {
+          allErrors.push({ filename: file.originalname, error: result.error });
+        } else {
+          const routePoints = await getRoutePoints(file.buffer, file.originalname);
+          const bins = routePoints ? gpxBinning.getAnalysisBins(routePoints, binLength) : [];
+          const hasHeartRateData = bins.some(bin => bin.avgHeartRate !== null);
+
+          allResults.push({
+            ...result.stats,
+            binLength,
+            bins,
+            binSummary: gpxBinning.getBinSummary(bins),
+            routePointCount: routePoints ? routePoints.length : 0,
+            hasHeartRateData,
+            fileIndex: i
+          });
+        }
+      } catch (error) {
+        allErrors.push({ filename: file.originalname, error: error.message });
+      }
+
+      console.log(`File ${i+1}/${totalFiles} complete: ${file.originalname}`);
+
+      // Send progress update after each file
+      const progress = {
+        type: 'progress',
+        fileIndex: i + 1,
+        totalFiles,
+        progressPercent: Math.round(((i + 1) / totalFiles) * 100),
+        filesProcessed: allResults.length + allErrors.length,
+        currentFile: file.originalname,
+        resultsSoFar: allResults,
+        errorsSoFar: allErrors
+      };
+      res.write(`data: ${JSON.stringify(progress)}\n\n`);
+      if (res.flush) res.flush();
+      
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+
+    // Send final summary
+    const summary = {
+      type: 'complete',
+      totalFiles,
+      successfulFiles: allResults.length,
+      failedFiles: allErrors.length,
+      results: allResults,
+      errors: allErrors
+    };
+
+    res.write(`data: ${JSON.stringify(summary)}\n\n`);
+    
+    // Delete the batch data to free memory
+    delete req.app.locals.batchFiles[batchId];
+    
+    res.end();
+  } catch (error) {
+    console.error('Batch processing error:', error);
+    res.write(`data: ${JSON.stringify({ type: 'error', error: error.message })}\n\n`);
+    res.end();
+    
+    // Clean up on error too
+    delete req.app.locals.batchFiles[batchId];
+  }
+});
+
+
 
 app.listen(PORT, () => {
   console.log(`🚀 RunGrade backend running on port ${PORT}`);
