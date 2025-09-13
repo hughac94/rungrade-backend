@@ -834,8 +834,95 @@ app.get('/api/process-batch/:batchId', async (req, res) => {
   }
 });
 
+// Accepts JSON results, applies filters, returns filtered analysis
+app.post('/api/analyze-with-filters-json', (req, res) => {
+  try {
+    const { results, filterOptions, removeUnreliableBins, heartRateFilter } = req.body;
+    if (!results || !Array.isArray(results)) {
+      return res.status(400).json({ success: false, error: 'No results provided' });
+    }
 
+    // Track exclusion reasons
+    let exclusionCounts = {
+      speed: 0,
+      gradient: 0,
+      timeInSeconds: 0,
+      distance: 0,
+      heartRate: 0,
+      total: 0
+    };
 
+    const filteredResults = results.map(run => {
+      let bins = run.bins || [];
+      let filteredBins = [];
+      bins.forEach(bin => {
+        let excludeReason = null;
+        if (removeUnreliableBins) {
+          const speed =
+  typeof bin.avgSpeed === 'number'
+    ? bin.avgSpeed // FIT files: km/h
+    : (typeof bin.velocity === 'number' ? bin.velocity * 3.6 : 0); // GPX files: m/s to km/h
+
+          if (!(speed >= 1 && speed <= 30)) {
+            exclusionCounts.speed++;
+            excludeReason = 'speed';
+          } else if (!(bin.gradient <= 30 && bin.gradient >= -30)) {
+            exclusionCounts.gradient++;
+            excludeReason = 'gradient';
+          } else if (!(bin.timeInSeconds >= 1)) {
+            exclusionCounts.timeInSeconds++;
+            excludeReason = 'timeInSeconds';
+          } else if (!(bin.distance > 0)) {
+            exclusionCounts.distance++;
+            excludeReason = 'distance';
+          } 
+        }
+        if (heartRateFilter && (heartRateFilter.minHR || heartRateFilter.maxHR)) {
+          if (bin.avgHeartRate == null ||
+              (heartRateFilter.minHR && bin.avgHeartRate < heartRateFilter.minHR) ||
+              (heartRateFilter.maxHR && bin.avgHeartRate > heartRateFilter.maxHR)) {
+            exclusionCounts.heartRate++;
+            excludeReason = 'heartRate';
+          }
+        }
+        if (!excludeReason) {
+          filteredBins.push(bin);
+        } else {
+          exclusionCounts.total++;
+        }
+      });
+      return { ...run, bins: filteredBins };
+    });
+
+    // Calculate summary
+    const totalOriginalBins = results.reduce((sum, r) => sum + (r.bins?.length || 0), 0);
+    const totalFilteredBins = filteredResults.reduce((sum, r) => sum + (r.bins?.length || 0), 0);
+
+    // Run advanced analysis on filtered bins
+    const gradientPace = gpxBinning.getGradientPaceAnalysis(filteredResults);
+    const paceByGradientChart = gpxBinning.getPaceByGradientChart(filteredResults);
+    const gradeAdjustment = gpxBinning.getGradeAdjustmentAnalysis(filteredResults);
+
+    res.json({
+      success: true,
+      summary: {
+        totalOriginalBins,
+        totalFilteredBins,
+        exclusionCounts
+      },
+      analyses: {
+        gradientPace,
+        paceByGradientChart,
+        gradeAdjustment
+      },
+      filteredResults
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Start the server
 app.listen(PORT, () => {
   console.log(`🚀 RunGrade backend running on port ${PORT}`);
   console.log(`📡 Health check: http://localhost:${PORT}/api/health`);
