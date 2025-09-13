@@ -331,6 +331,8 @@ function getGradientPaceAnalysis(allResults) {
 
     if (binsInRange.length === 0) return null;
 
+    const totalTime = binsInRange.reduce((sum, bin) => sum + (bin.timeInSeconds || 0), 0);
+
     // FIX: Use pace_min_per_km instead of pace
     const paceValues = binsInRange
       .map(bin => bin.pace_min_per_km)  // Changed from bin.pace
@@ -374,24 +376,23 @@ function getGradientPaceAnalysis(allResults) {
       }
     }
 
-    // Debug logging
-    console.log(`Bucket ${range.label}: ${paceValues.length} pace values, mean: ${avgPace.toFixed(2)}, median: ${medianPace.toFixed(2)}`);
 
     return {
       ...range,
       binCount: binsInRange.length,
-      // Existing mean fields (unchanged)
+      totalTime, // <-- This is the total time in seconds for the bucket
       avgPace: isNaN(avgPace) ? null : avgPace,
       avgHeartRate: isNaN(avgHeartRate) ? null : avgHeartRate,
       paceMinPerKm: isNaN(avgPace) ? 'N/A' : `${Math.floor(avgPace)}:${Math.round((avgPace % 1) * 60).toString().padStart(2, '0')}`,
-      // New median fields
       medianPace: isNaN(medianPace) ? null : medianPace,
       medianHeartRate: isNaN(medianHeartRate) ? null : medianHeartRate,
       medianPaceMinPerKm: isNaN(medianPace) ? 'N/A' : `${Math.floor(medianPace)}:${Math.round((medianPace % 1) * 60).toString().padStart(2, '0')}`
     };
   }).filter(bucket => bucket !== null);
 
-console.log('Sample bucket with median data:', buckets[0]);
+  if (allBins.length > 0) {
+    console.log('Sample bin:', allBins[0]);
+  }
 
   return {
     buckets,
