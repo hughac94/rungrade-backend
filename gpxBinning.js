@@ -465,41 +465,63 @@ const key = grad.toString();
  * Calculate personal grade adjustment factors compared to literature values
  * Shows how much each gradient impacts pace relative to flat (0%) terrain
  */
-function getGradeAdjustmentAnalysis(allResults) {
-  // First, get pace by individual gradient using existing function
+function getGradeAdjustmentAnalysis(allResults, basePaceOption = 'near-zero') {
   const gradientData = getPaceByGradientChart(allResults);
-  
-  // Calculate base paces (both mean and median) - SINGLE DECLARATION
+  const gradientPaceAnalysis = getGradientPaceAnalysis(allResults);
+
   let basePace = null;
   let basePaceMedian = null;
-  
-  // Find the pace at 0% gradient to use as baseline
-  const flatGradient = gradientData.find(item => item.gradient === '0');
-  if (flatGradient) {
-    basePace = flatGradient.avgPace;
-  } else {
-    // If no exact 0% gradient data, estimate from nearby values
-    const nearZero = gradientData
-      .filter(item => {
-        const grad = parseInt(item.gradient);
-        return !isNaN(grad) && grad >= -2 && grad <= 2;
-      })
-      .sort((a, b) => Math.abs(parseInt(a.gradient)) - Math.abs(parseInt(b.gradient)));
-    
-    if (nearZero.length > 0) {
-      basePace = nearZero[0].avgPace;
-    } else {
-      // If still no data, use average of all paces
-      const validPaces = gradientData.filter(item => item.avgPace).map(item => item.avgPace);
-      if (validPaces.length > 0) {
-        basePace = validPaces.reduce((sum, pace) => sum + pace, 0) / validPaces.length;
+  let basePaceMethod = '';
+  let basePaceBinStats = {};
+
+  if (basePaceOption === 'near-zero') {
+    // Filter all bins for gradient between -2% and 2%
+    const allBins = [];
+    allResults.forEach(result => {
+      if (result.bins && Array.isArray(result.bins)) {
+        allBins.push(...result.bins);
       }
+    });
+    const nearZeroBins = allBins.filter(bin => bin.gradient >= -2 && bin.gradient <= 2);
+    if (nearZeroBins.length > 0) {
+      const totalDistance = nearZeroBins.reduce((sum, bin) => sum + bin.distance, 0); // meters
+const totalTime = nearZeroBins.reduce((sum, bin) => sum + (bin.timeInSeconds || 0), 0); // seconds
+const avgPace = (totalDistance > 0 && totalTime > 0)
+  ? (totalTime / 60) / (totalDistance / 1000) // min/km
+  : null;
+      basePace = avgPace;
+      basePaceMedian = avgPace; // Or calculate median if needed
+      basePaceMethod = '-2% to 2% gradient bin';
+      basePaceBinStats = {
+        label: '-2% to 2%',
+        binCount: nearZeroBins.length,
+        totalTime,
+        paceLabel: avgPace ? `${Math.floor(avgPace)}:${Math.round((avgPace % 1) * 60).toString().padStart(2, '0')}` : 'N/A'
+      };
     }
+  } else if (basePaceOption === 'all') {
+    // Use all bins for weighted average
+    const allBins = [];
+    allResults.forEach(result => {
+      if (result.bins && Array.isArray(result.bins)) {
+        allBins.push(...result.bins);
+      }
+    });
+    const totalDistance = allBins.reduce((sum, bin) => sum + bin.distance, 0); // meters
+    const totalTime = allBins.reduce((sum, bin) => sum + (bin.timeInSeconds || 0), 0); // seconds
+    const avgPace = (totalDistance > 0 && totalTime > 0)
+      ? (totalTime / 60) / (totalDistance / 1000) // min/km
+      : null;
+    basePace = avgPace;
+    basePaceMedian = avgPace; // For now, use mean as median
+    basePaceMethod = 'All paces';
+    basePaceBinStats = {
+      label: 'All bins',
+      binCount: allBins.length,
+      totalTime,
+      paceLabel: avgPace ? `${Math.floor(avgPace)}:${Math.round((avgPace % 1) * 60).toString().padStart(2, '0')}` : 'N/A'
+    };
   }
-  
-  // For now, use the same basePace for median calculations
-  // TODO: Calculate proper median base pace when individual bin data is available
-  basePaceMedian = basePace;
 
   const adjustmentData = gradientData.map(item => {
     const gradientValue = parseFloat(item.gradient.replace('%', ''));
@@ -531,8 +553,70 @@ function getGradeAdjustmentAnalysis(allResults) {
     basePace,
     basePaceMedian,
     basePaceLabel: basePace ? `${Math.floor(basePace)}:${Math.round((basePace % 1) * 60).toString().padStart(2, '0')}` : 'N/A',
-    basePaceMedianLabel: basePaceMedian ? `${Math.floor(basePaceMedian)}:${Math.round((basePaceMedian % 1) * 60).toString().padStart(2, '0')}` : 'N/A'
+    basePaceMedianLabel: basePaceMedian ? `${Math.floor(basePaceMedian)}:${Math.round((basePaceMedian % 1) * 60).toString().padStart(2, '0')}` : 'N/A',
+    basePaceMethod,
+    basePaceBinStats
   };
+}
+
+/**
+ * Returns mean/median adjustment factors for ±0.5% bins around each integer gradient
+ * Each bin: [g-0.5, g+0.5]
+ * statType: 'mean' or 'median'
+ */
+function getAdjustmentByGradientBins(allResults, basePace, statType = 'mean') {
+  // Collect all bins
+  const allBins = [];
+  allResults.forEach(result => {
+    if (result.bins && Array.isArray(result.bins)) {
+      allBins.push(...result.bins);
+    }
+  });
+
+  // Only use bins with valid gradient and pace
+  const validBins = allBins.filter(bin =>
+    typeof bin.gradient === 'number' &&
+    typeof bin.pace_min_per_km === 'number' &&
+    bin.pace_min_per_km > 0
+  );
+
+  // For each integer gradient from -30 to +30
+  const points = [];
+  for (let g = -30; g <= 30; g++) {
+    // Find bins in [g-0.5, g+0.5]
+    const binsInRange = validBins.filter(bin =>
+      bin.gradient >= g - 0.5 && bin.gradient < g + 0.5
+    );
+    if (binsInRange.length === 0) continue;
+
+    // Compute mean/median pace
+    const paces = binsInRange.map(bin => bin.pace_min_per_km);
+    let paceValue;
+    if (statType === 'median') {
+      const sorted = [...paces].sort((a, b) => a - b);
+      if (sorted.length % 2 === 0) {
+        paceValue = (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2;
+      } else {
+        paceValue = sorted[Math.floor(sorted.length / 2)];
+      }
+    } else {
+      paceValue = paces.reduce((sum, p) => sum + p, 0) / paces.length;
+    }
+
+    // Adjustment factor
+    const adjustment = basePace > 0 ? paceValue / basePace : 1;
+
+    points.push({
+      gradient: g,
+      binCount: binsInRange.length,
+      pace: paceValue,
+      adjustment,
+      statType,
+      paceLabel: `${Math.floor(paceValue)}:${Math.round((paceValue % 1) * 60).toString().padStart(2, '0')}`
+    });
+  }
+
+  return points;
 }
 
 // Add to module.exports:
@@ -543,7 +627,8 @@ module.exports = {
   getPaceByGradientChart,
   getGradeAdjustmentAnalysis, // Add this export
   haversine,
-  formatTime
+  formatTime,
+  getAdjustmentByGradientBins // Add this export
 };
 
 

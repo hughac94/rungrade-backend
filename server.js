@@ -182,21 +182,25 @@ app.post('/api/analyze-with-bins', upload.array('files', 200), async (req, res) 
 // Advanced analysis (patterns, charts)
 app.post('/api/advanced-analysis', (req, res) => {
   try {
-    const { results } = req.body;
-    
+    const { results, statType = 'mean' } = req.body;
+
     const gradientPace = gpxBinning.getGradientPaceAnalysis(results);
     const paceByGradientChart = gpxBinning.getPaceByGradientChart(results);
     const gradeAdjustment = gpxBinning.getGradeAdjustmentAnalysis(results);
-    
-    console.log('✅ Advanced analysis complete');
-    console.log('Sample gradient bucket with median:', gradientPace.buckets[0]);
+
+    // Calculate base pace for red dots
+    const basePace = gradeAdjustment.basePace;
+    const redDotData = gpxBinning.getAdjustmentByGradientBins(results, basePace, statType);
+
+    console.log('Backend: redDotData', redDotData); // Optional: add this for debugging
 
     res.json({
       success: true,
       analyses: {
         gradientPace,
         paceByGradientChart,
-        gradeAdjustment
+        gradeAdjustment,
+        redDotData
       }
     });
   } catch (error) {
@@ -276,6 +280,10 @@ app.post('/api/analyze-with-filters-json', (req, res) => {
     const gradientPace = gpxBinning.getGradientPaceAnalysis(filteredResults);
     const paceByGradientChart = gpxBinning.getPaceByGradientChart(filteredResults);
     const gradeAdjustment = gpxBinning.getGradeAdjustmentAnalysis(filteredResults);
+    const basePace = gradeAdjustment.basePace;
+    const statType = req.body.statType || 'mean'; // <-- Add this line
+    const redDotData = gpxBinning.getAdjustmentByGradientBins(filteredResults, basePace, statType );
+
 
     res.json({
       success: true,
@@ -287,7 +295,8 @@ app.post('/api/analyze-with-filters-json', (req, res) => {
       analyses: {
         gradientPace,
         paceByGradientChart,
-        gradeAdjustment
+        gradeAdjustment,
+        redDotData
       },
       filteredResults
     });
