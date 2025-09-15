@@ -482,21 +482,31 @@ function getGradeAdjustmentAnalysis(allResults, basePaceOption = 'near-zero') {
         allBins.push(...result.bins);
       }
     });
-    const nearZeroBins = allBins.filter(bin => bin.gradient >= -2 && bin.gradient <= 2);
+    const nearZeroBins = allBins.filter(bin => bin.gradient >= -2 && bin.gradient <= 2 && bin.pace_min_per_km > 0);
     if (nearZeroBins.length > 0) {
-      const totalDistance = nearZeroBins.reduce((sum, bin) => sum + bin.distance, 0); // meters
-const totalTime = nearZeroBins.reduce((sum, bin) => sum + (bin.timeInSeconds || 0), 0); // seconds
-const avgPace = (totalDistance > 0 && totalTime > 0)
-  ? (totalTime / 60) / (totalDistance / 1000) // min/km
-  : null;
-      basePace = avgPace;
-      basePaceMedian = avgPace; // Or calculate median if needed
-      basePaceMethod = '-2% to 2% gradient bin';
+      // Calculate mean
+      const totalDistance = nearZeroBins.reduce((sum, bin) => sum + bin.distance, 0);
+      const totalTime = nearZeroBins.reduce((sum, bin) => sum + (bin.timeInSeconds || 0), 0);
+      const avgPace = (totalDistance > 0 && totalTime > 0)
+        ? (totalTime / 60) / (totalDistance / 1000)
+        : null;
+      // Calculate median
+      const paces = nearZeroBins.map(bin => bin.pace_min_per_km).sort((a, b) => a - b);
+      let medianPace = null;
+      if (paces.length > 0) {
+        const mid = Math.floor(paces.length / 2);
+        medianPace = paces.length % 2 === 0
+          ? (paces[mid - 1] + paces[mid]) / 2
+          : paces[mid];
+      }
+      basePace = medianPace; // Use median for both!
+      basePaceMedian = medianPace;
+      basePaceMethod = '-2% to 2% gradient bin (median)';
       basePaceBinStats = {
         label: '-2% to 2%',
         binCount: nearZeroBins.length,
         totalTime,
-        paceLabel: avgPace ? `${Math.floor(avgPace)}:${Math.round((avgPace % 1) * 60).toString().padStart(2, '0')}` : 'N/A'
+        paceLabel: medianPace ? `${Math.floor(medianPace)}:${Math.round((medianPace % 1) * 60).toString().padStart(2, '0')}` : 'N/A'
       };
     }
   } else if (basePaceOption === 'all') {
